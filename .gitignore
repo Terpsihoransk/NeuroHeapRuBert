@@ -1,8 +1,0 @@
-# Virtualenv and Python
-*/venv/*
-*.pyc
-__pycache__/
-
-# Environment files
-.env       # <-- Добавьте эту строку
-.env.*     # Можно также игнорировать все вариации .env (опционально)
