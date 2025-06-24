@@ -1,94 +1,60 @@
-# Основной скрипт
-
 from database import ReviewDB
 from nlp_processor import NLPProcessor
 from moderator import Moderator
-from config import MODEL_SETTINGS
-import time
 import logging
+import time
 
-# Настройка логгирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('review_processor.log'),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 
-
-def process_batch(db, nlp, moderator, batch_size=10):
-    """Обработка пачки отзывов"""
-    reviews = db.fetch_unprocessed(limit=batch_size)
-    if not reviews:
-        logging.info("Нет новых отзывов для обработки")
-        return False
-
-    for review_id, review_text in reviews:
-        try:
-            logging.info(f"Начата обработка отзыва ID: {review_id}")
-
-            # Шаг 1: Анализ тональности
-            sentiment, confidence = nlp.get_sentiment(review_text)
-
-            # Шаг 2: Извлечение сущностей
-            entities = nlp.extract_entities(review_text)
-
-            # Шаг 3: Определение тем
-            topics = nlp.detect_topics(review_text, entities)
-
-            # Шаг 4: Модерация
-            is_appropriate = not moderator.contains_profanity(review_text)
-
-            # Шаг 5: Обновление в БД
-            db.update_review(
-                review_id=review_id,
-                sentiment=sentiment,
-                topics=str(topics),
-                details=", ".join([f"{e[0]} ({e[1]})" for e in entities]),
-                is_appropriate=is_appropriate
-            )
-
-            logging.info(f"Успешно обработан отзыв ID: {review_id}")
-            logging.debug(f"Результаты: {sentiment=}, {topics=}, {is_appropriate=}")
-
-        except Exception as e:
-            logging.error(f"Ошибка обработки отзыва ID: {review_id}: {str(e)}")
-            continue
-
-    return True
+import os
+os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'  # Отключаем предупреждение о симлинках
+os.environ['HF_HUB_VERBOSITY'] = 'error'  # Уменьшаем уровень логгирования
 
 
 def main():
-    try:
-        logging.info("Инициализация сервиса обработки отзывов...")
+    db = ReviewDB()
+    nlp = NLPProcessor()
+    moderator = Moderator("profanity_ru.txt")
 
-        # Инициализация компонентов
-        db = ReviewDB()
-        nlp = NLPProcessor()
-        moderator = Moderator(MODEL_SETTINGS['profanity_list'])
+    while True:
+        try:
+            reviews = db.fetch_unprocessed(limit=5)
+            if not reviews:
+                logging.info("Нет новых отзывов. Ожидание 30 секунд...")
+                time.sleep(30)
+                continue
 
-        logging.info("Сервис успешно инициализирован, начало обработки...")
+            for review_id, text in reviews:
+                try:
+                    # Анализ тональности
+                    sentiment, score = nlp.get_sentiment(text)
 
-        # Основной цикл обработки
-        while True:
-            try:
-                if not process_batch(db, nlp, moderator):
-                    time.sleep(60)  # Пауза при отсутствии новых отзывов
-            except KeyboardInterrupt:
-                logging.info("Получен сигнал прерывания, завершение работы...")
-                break
-            except Exception as e:
-                logging.error(f"Критическая ошибка в основном цикле: {str(e)}")
-                time.sleep(300)  # Пауза при критических ошибках
+                    # Извлечение сущностей
+                    entities = nlp.extract_entities(text)
 
-    except Exception as e:
-        logging.critical(f"Фатальная ошибка при запуске: {str(e)}")
-    finally:
-        if 'db' in locals():
-            db.conn.close()
-        logging.info("Сервис остановлен")
+                    # Определение тем
+                    topics = nlp.detect_topics(text, entities)
+
+                    # Модерация
+                    is_appropriate = not moderator.contains_profanity(text)
+
+                    # Обновление БД
+                    db.update_review(
+                        review_id=review_id,
+                        sentiment=sentiment,
+                        topics=str(topics),
+                        details=", ".join([f"{e[0]} ({e[1]})" for e in entities]),
+                        is_appropriate=is_appropriate
+                    )
+
+                    logging.info(f"Обработан отзыв ID: {review_id}")
+
+                except Exception as e:
+                    logging.error(f"Ошибка обработки отзыва {review_id}: {str(e)}")
+
+        except KeyboardInterrupt:
+            logging.info("Завершение работы...")
+            break
 
 
 if __name__ == "__main__":
